@@ -29,6 +29,7 @@ echo
 # ── Step 2: Install scripts ───────────────────────────────────────────────────
 echo "[2/5] Installing scripts..."
 cp "$SCRIPT_DIR/../generate_overview.py"       "$INSTALL_DIR/"
+  cp "$SCRIPT_DIR/../consolidate_annual.py"    "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/folder_action_trigger.sh"      "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/quick_action_run.sh"           "$INSTALL_DIR/"
 chmod +x "$INSTALL_DIR/folder_action_trigger.sh"
