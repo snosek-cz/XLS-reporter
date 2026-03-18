@@ -13,18 +13,54 @@ echo
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 INSTALL_DIR="$HOME/Library/Scripts/XLS-Reporter"
 VENV_DIR="$INSTALL_DIR/venv"
-INBOX_DIR="$HOME/XLS-Reports/Inbox"
-DONE_DIR="$HOME/XLS-Reports/Done"
 ACTIONS_DIR="$HOME/Library/Scripts/Folder Action Scripts"
+
+# Helper: expand ~ in paths
+expand_path() {
+    echo "${1/#\~/$HOME}"
+}
+
+# ── Folder configuration ──────────────────────────────────────────────────────
+echo "Where would you like to set up your working folders?"
+echo "(Press Enter to accept the default shown in brackets)"
+echo
+
+# Parent directory
+read -p "  Parent folder location [~/Documents]: " PARENT_INPUT
+PARENT_INPUT="${PARENT_INPUT:-~/Documents}"
+PARENT_DIR="$(expand_path "$PARENT_INPUT")"
+
+# Inbox name
+read -p "  Inbox folder name [XLS-Inbox]: " INBOX_NAME
+INBOX_NAME="${INBOX_NAME:-XLS-Inbox}"
+
+# Done name
+read -p "  Done folder name [XLS-Done]: " DONE_NAME
+DONE_NAME="${DONE_NAME:-XLS-Done}"
+
+INBOX_DIR="$PARENT_DIR/$INBOX_NAME"
+DONE_DIR="$PARENT_DIR/$DONE_NAME"
+
+echo
+echo "  📂 Inbox : $INBOX_DIR"
+echo "  📂 Done  : $DONE_DIR"
+echo
+read -p "  Confirm? [Y/n]: " CONFIRM
+CONFIRM="${CONFIRM:-Y}"
+if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
+    echo "  Setup cancelled."
+    exit 0
+fi
+echo
 
 # ── Step 1: Create folders ────────────────────────────────────────────────────
 echo "[1/5] Creating folders..."
-mkdir -p "$INSTALL_DIR"
 mkdir -p "$INBOX_DIR"
 mkdir -p "$DONE_DIR"
+mkdir -p "$INSTALL_DIR"
 mkdir -p "$ACTIONS_DIR"
-echo "  ✅ ~/XLS-Reports/Inbox    ← drop your Details files here"
-echo "  ✅ ~/XLS-Reports/Done     ← processed files land here"
+echo "  ✅ $INBOX_DIR"
+echo "  ✅ $DONE_DIR"
 echo
 
 # ── Step 2: Install scripts ───────────────────────────────────────────────────
@@ -35,6 +71,11 @@ cp "$SCRIPT_DIR/folder_action_trigger.sh"   "$INSTALL_DIR/"
 cp "$SCRIPT_DIR/quick_action_run.sh"        "$INSTALL_DIR/"
 chmod +x "$INSTALL_DIR/folder_action_trigger.sh"
 chmod +x "$INSTALL_DIR/quick_action_run.sh"
+
+# Write config file with folder paths for the trigger script
+cat > "$INSTALL_DIR/config.env" << CONFIG
+XLS_DONE_DIR="$DONE_DIR"
+CONFIG
 echo "  ✅ Scripts installed to: $INSTALL_DIR"
 echo
 
@@ -46,22 +87,22 @@ if ! command -v python3 &>/dev/null; then
 fi
 PYTHON_VERSION=$(python3 --version)
 echo "  ✅ $PYTHON_VERSION found"
-
-# Create isolated venv inside install dir
-echo "  Creating virtual environment..."
+echo "  Creating isolated virtual environment..."
 python3 -m venv "$VENV_DIR"
 "$VENV_DIR/bin/pip" install --quiet --upgrade pip
 "$VENV_DIR/bin/pip" install --quiet openpyxl
-echo "  ✅ openpyxl installed in isolated venv: $VENV_DIR"
+echo "  ✅ openpyxl installed in: $VENV_DIR"
 echo
+
+# Patch trigger and quick action scripts to use venv Python
+sed -i '' "s|python3 |\"$VENV_DIR/bin/python3\" |g" "$INSTALL_DIR/folder_action_trigger.sh"
+sed -i '' "s|python3 |\"$VENV_DIR/bin/python3\" |g" "$INSTALL_DIR/quick_action_run.sh"
 
 # ── Step 4: Install Folder Action ────────────────────────────────────────────
 echo "[4/5] Installing macOS Folder Action..."
 
 FA_SCRIPT="$ACTIONS_DIR/XLS-Reporter-Folder-Action.scpt"
-PYTHON_BIN="$VENV_DIR/bin/python3"
 
-# Write AppleScript that calls our shell trigger
 cat > "/tmp/xls_fa.applescript" << APPLESCRIPT
 on adding folder items to thisFolder after receiving theItems
     set installDir to "$INSTALL_DIR/"
@@ -75,10 +116,9 @@ APPLESCRIPT
 
 osacompile -o "$FA_SCRIPT" "/tmp/xls_fa.applescript" 2>/dev/null && \
     echo "  ✅ Folder Action script compiled" || \
-    echo "  ⚠️  Could not compile AppleScript (Folder Action will need manual setup)"
+    echo "  ⚠️  Could not compile (manual Folder Action setup may be needed)"
 rm -f /tmp/xls_fa.applescript
 
-# Attach Folder Action to Inbox
 osascript << APPLESCRIPT2 2>/dev/null
 tell application "System Events"
     try
@@ -89,11 +129,6 @@ end tell
 APPLESCRIPT2
 echo "  ✅ Folder Action attached to: $INBOX_DIR"
 echo
-
-# Write the venv python path into folder_action_trigger.sh and quick_action_run.sh
-# so they use the correct Python automatically
-sed -i '' "s|python3 |\"$VENV_DIR/bin/python3\" |g" "$INSTALL_DIR/folder_action_trigger.sh"
-sed -i '' "s|python3 |\"$VENV_DIR/bin/python3\" |g" "$INSTALL_DIR/quick_action_run.sh"
 
 # ── Step 5: Quick Action ──────────────────────────────────────────────────────
 echo "[5/5] Installing Quick Action (right-click)..."
@@ -125,8 +160,8 @@ cat > "$QA_DIR/Contents/document.wflow" << WORKFLOW
                 <key>ActionParameters</key>
                 <dict>
                     <key>COMMAND_STRING</key>
-                    <string>for f in "$@"; do
-  "$HOME/Library/Scripts/XLS-Reporter/venv/bin/python3" "$HOME/Library/Scripts/XLS-Reporter/generate_overview.py" "$f" --notify
+                    <string>for f in "\$@"; do
+  "$VENV_DIR/bin/python3" "$INSTALL_DIR/generate_overview.py" "\$f" --notify
 done</string>
                     <key>inputMethod</key><integer>1</integer>
                     <key>shell</key><string>/bin/bash</string>
@@ -194,8 +229,8 @@ echo "HOW TO USE:"
 echo
 echo "  📂 AUTOMATIC (Folder Action):"
 echo "     Drop any Details_*.xlsx into:"
-echo "     ~/XLS-Reports/Inbox/"
-echo "     → Overview generated, file moves to ~/XLS-Reports/Done/"
+echo "     $INBOX_DIR"
+echo "     → Overview generated, file moves to $DONE_DIR"
 echo "     → Annual_YEAR.xlsx updated automatically"
 echo
 echo "  🖱️  MANUAL (Quick Action):"
@@ -203,6 +238,6 @@ echo "     Right-click any Details_*.xlsx in Finder"
 echo "     → Quick Actions → Generate XLS Overview"
 echo
 echo "  📋 NOTE: You may need to enable Folder Actions:"
-echo "     Right-click Desktop → Services → Folder Actions Setup"
+echo "     Right-click your Desktop → Services → Folder Actions Setup"
 echo "     Make sure 'Enable Folder Actions' is checked."
 echo

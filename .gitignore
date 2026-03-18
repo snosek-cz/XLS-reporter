@@ -5,3 +5,4 @@ venv/
 .a0proj/memory/
 .a0proj/knowledge/
 test_data/Annual_*.xlsx
+test_data/.DS_Store
