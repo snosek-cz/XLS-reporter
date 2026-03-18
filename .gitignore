@@ -4,3 +4,4 @@ __pycache__/
 venv/
 .a0proj/memory/
 .a0proj/knowledge/
+test_data/Annual_*.xlsx
