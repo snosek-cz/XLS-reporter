@@ -12,6 +12,7 @@ echo
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 INSTALL_DIR="$HOME/Library/Scripts/XLS-Reporter"
+VENV_DIR="$INSTALL_DIR/venv"
 INBOX_DIR="$HOME/XLS-Reports/Inbox"
 DONE_DIR="$HOME/XLS-Reports/Done"
 ACTIONS_DIR="$HOME/Library/Scripts/Folder Action Scripts"
@@ -28,73 +29,71 @@ echo
 
 # ── Step 2: Install scripts ───────────────────────────────────────────────────
 echo "[2/5] Installing scripts..."
-cp "$SCRIPT_DIR/../generate_overview.py"       "$INSTALL_DIR/"
-  cp "$SCRIPT_DIR/../consolidate_annual.py"    "$INSTALL_DIR/"
-cp "$SCRIPT_DIR/folder_action_trigger.sh"      "$INSTALL_DIR/"
-cp "$SCRIPT_DIR/quick_action_run.sh"           "$INSTALL_DIR/"
+cp "$SCRIPT_DIR/../generate_overview.py"    "$INSTALL_DIR/"
+cp "$SCRIPT_DIR/../consolidate_annual.py"   "$INSTALL_DIR/"
+cp "$SCRIPT_DIR/folder_action_trigger.sh"   "$INSTALL_DIR/"
+cp "$SCRIPT_DIR/quick_action_run.sh"        "$INSTALL_DIR/"
 chmod +x "$INSTALL_DIR/folder_action_trigger.sh"
 chmod +x "$INSTALL_DIR/quick_action_run.sh"
 echo "  ✅ Scripts installed to: $INSTALL_DIR"
 echo
 
-# ── Step 3: Check Python & openpyxl ──────────────────────────────────────────
-echo "[3/5] Checking Python dependencies..."
+# ── Step 3: Python venv + openpyxl ───────────────────────────────────────────
+echo "[3/5] Setting up Python environment..."
 if ! command -v python3 &>/dev/null; then
-    echo "  ❌ python3 not found. Please install Python 3 from https://www.python.org"
+    echo "  ❌ python3 not found. Install from https://www.python.org or: brew install python"
     exit 1
 fi
 PYTHON_VERSION=$(python3 --version)
-echo "  ✅ $PYTHON_VERSION"
+echo "  ✅ $PYTHON_VERSION found"
 
-if ! python3 -c "import openpyxl" &>/dev/null; then
-    echo "  Installing openpyxl..."
-    pip3 install openpyxl --quiet
-    echo "  ✅ openpyxl installed"
-else
-    echo "  ✅ openpyxl already installed"
-fi
+# Create isolated venv inside install dir
+echo "  Creating virtual environment..."
+python3 -m venv "$VENV_DIR"
+"$VENV_DIR/bin/pip" install --quiet --upgrade pip
+"$VENV_DIR/bin/pip" install --quiet openpyxl
+echo "  ✅ openpyxl installed in isolated venv: $VENV_DIR"
 echo
 
 # ── Step 4: Install Folder Action ────────────────────────────────────────────
 echo "[4/5] Installing macOS Folder Action..."
 
-# Create the Folder Action script (AppleScript that calls our shell script)
 FA_SCRIPT="$ACTIONS_DIR/XLS-Reporter-Folder-Action.scpt"
+PYTHON_BIN="$VENV_DIR/bin/python3"
 
-osascript << APPLESCRIPT
-set scriptContent to "on adding folder items to thisFolder after receiving theItems
-  set installDir to POSIX path of (path to home folder) & \"Library/Scripts/XLS-Reporter/\"
-  set triggerScript to installDir & \"folder_action_trigger.sh\"
-  repeat with theItem in theItems
-    set itemPath to POSIX path of theItem
-    do shell script \"bash \" & quoted form of triggerScript & \" \" & quoted form of itemPath
-  end repeat
-end adding folder items to"
-set scriptFile to POSIX file "$FA_SCRIPT"
-set fileRef to open for access scriptFile with write permission
-set eof fileRef to 0
-write scriptContent to fileRef
-close access fileRef
+# Write AppleScript that calls our shell trigger
+cat > "/tmp/xls_fa.applescript" << APPLESCRIPT
+on adding folder items to thisFolder after receiving theItems
+    set installDir to "$INSTALL_DIR/"
+    set triggerScript to installDir & "folder_action_trigger.sh"
+    repeat with theItem in theItems
+        set itemPath to POSIX path of theItem
+        do shell script "bash " & quoted form of triggerScript & " " & quoted form of itemPath
+    end repeat
+end adding folder items to
 APPLESCRIPT
 
-# Compile the AppleScript
-if [ -f "$FA_SCRIPT" ]; then
-    osacompile -o "${FA_SCRIPT%.scpt}.scpt" "$FA_SCRIPT" 2>/dev/null || true
-    echo "  ✅ Folder Action script created"
-fi
+osacompile -o "$FA_SCRIPT" "/tmp/xls_fa.applescript" 2>/dev/null && \
+    echo "  ✅ Folder Action script compiled" || \
+    echo "  ⚠️  Could not compile AppleScript (Folder Action will need manual setup)"
+rm -f /tmp/xls_fa.applescript
 
-# Attach Folder Action to Inbox folder using AppleScript
-osascript << APPLESCRIPT2
+# Attach Folder Action to Inbox
+osascript << APPLESCRIPT2 2>/dev/null
 tell application "System Events"
-  try
-    set inboxFolder to POSIX file "$INBOX_DIR" as alias
-    make new folder action at inboxFolder with properties {name:"XLS-Reporter-Folder-Action", script name:"XLS-Reporter-Folder-Action"}
-  end try
+    try
+        set inboxFolder to POSIX file "$INBOX_DIR" as alias
+        make new folder action at inboxFolder with properties {name:"XLS-Reporter-Folder-Action", script name:"XLS-Reporter-Folder-Action"}
+    end try
 end tell
 APPLESCRIPT2
-
 echo "  ✅ Folder Action attached to: $INBOX_DIR"
 echo
+
+# Write the venv python path into folder_action_trigger.sh and quick_action_run.sh
+# so they use the correct Python automatically
+sed -i '' "s|python3 |\"$VENV_DIR/bin/python3\" |g" "$INSTALL_DIR/folder_action_trigger.sh"
+sed -i '' "s|python3 |\"$VENV_DIR/bin/python3\" |g" "$INSTALL_DIR/quick_action_run.sh"
 
 # ── Step 5: Quick Action ──────────────────────────────────────────────────────
 echo "[5/5] Installing Quick Action (right-click)..."
@@ -102,8 +101,7 @@ echo "[5/5] Installing Quick Action (right-click)..."
 QA_DIR="$HOME/Library/Services/Generate XLS Overview.workflow"
 mkdir -p "$QA_DIR/Contents"
 
-# Create the Quick Action workflow plist
-cat > "$QA_DIR/Contents/document.wflow" << 'WORKFLOW'
+cat > "$QA_DIR/Contents/document.wflow" << WORKFLOW
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -128,7 +126,7 @@ cat > "$QA_DIR/Contents/document.wflow" << 'WORKFLOW'
                 <dict>
                     <key>COMMAND_STRING</key>
                     <string>for f in "$@"; do
-  python3 ~/Library/Scripts/XLS-Reporter/generate_overview.py "$f" --notify
+  "$HOME/Library/Scripts/XLS-Reporter/venv/bin/python3" "$HOME/Library/Scripts/XLS-Reporter/generate_overview.py" "$f" --notify
 done</string>
                     <key>inputMethod</key><integer>1</integer>
                     <key>shell</key><string>/bin/bash</string>
@@ -197,13 +195,14 @@ echo
 echo "  📂 AUTOMATIC (Folder Action):"
 echo "     Drop any Details_*.xlsx into:"
 echo "     ~/XLS-Reports/Inbox/"
-echo "     → Overview sheet auto-generated"
-echo "     → File moved to ~/XLS-Reports/Done/"
+echo "     → Overview generated, file moves to ~/XLS-Reports/Done/"
+echo "     → Annual_YEAR.xlsx updated automatically"
 echo
 echo "  🖱️  MANUAL (Quick Action):"
 echo "     Right-click any Details_*.xlsx in Finder"
 echo "     → Quick Actions → Generate XLS Overview"
 echo
-echo "  📋 NOTE: You may need to enable Folder Actions in Finder:"
-echo "     Finder → right-click Desktop → Services → Folder Actions Setup"
+echo "  📋 NOTE: You may need to enable Folder Actions:"
+echo "     Right-click Desktop → Services → Folder Actions Setup"
+echo "     Make sure 'Enable Folder Actions' is checked."
 echo
